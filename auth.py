@@ -1,14 +1,21 @@
-from fastapi import APIRouter, HTTPException, security
-from rest_framework import status
-
+import os
+from fastapi import APIRouter, HTTPException, security, status, Response, Security
 from database import session,ENGINE
 from schemas import RegisterModel,LoginModel
+from fastapi.encoders import jsonable_encoder
+from fastapi_jwt import JwtAuthorizationCredentials, JwtAccessBearer
+from dotenv import load_dotenv
 from models import User
 from werkzeug import security
-
-auth_router = APIRouter(prefix="/auth", tags=["auth"])
+load_dotenv()
+access_security = JwtAccessBearer(secret_key=os.getenv("secret_key"),auto_error=True)
+auth_router = APIRouter(prefix="/auth")
 
 session = session(bind=ENGINE)
+
+@auth_router.get("/")
+async def auth():
+    return {"message": "auth page"}
 
 @auth_router.get("/login")
 async def login():
@@ -16,17 +23,15 @@ async def login():
 
 
 @auth_router.post("/login")
-async def login(user: LoginModel):
-    username = session.query(User).filter(User.username == user.username).first()
-    if username is None:
-        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="username does not exist")
+async def login(user: LoginModel, response: Response):
+    check_user = session.query(User).filter(User.username == user.username).first()
 
-    user_check = session.query(User).filter(User.username == user.username).first()
-
-    if security.check_password_hash(user_check.password, user.password):
-        return HTTPException(status_code=status.HTTP_200_OK, detail="login successful")
-
-    return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="password is incorrect")
+    if check_user and security.check_password_hash(check_user.password, user.password):
+        subject = {"username": user.username, "password": user.password, "role": "user"}
+        access_token = access_security.create_access_token(subject=subject)
+        access_security.set_access_cookie(response, access_token)
+        return {"access_token": access_token}
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"username yoki password xato")
 
 
 @auth_router.get("/logout")
@@ -59,3 +64,27 @@ async def register(user: RegisterModel):
     session.add(new_user)
     session.commit()
     return HTTPException(status_code=status.HTTP_201_CREATED, detail="user created")
+
+
+@auth_router.get("/list")
+async def users_data(status_code=status.HTTP_200_OK):
+    users = session.query(User).all()
+    context = [
+        {
+            "id": user.id,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "email": user.email,
+            "username": user.username,
+            "is_staff": user.is_staff,
+            "is_active": user.is_active,
+            # "password": user.password,
+        }
+        for user in users
+    ]
+    return jsonable_encoder(context)
+
+
+@auth_router.get("/me")
+async def me(credentials: JwtAuthorizationCredentials = Security(access_security)):
+    return {"username": credentials["username"],"password": credentials["password"],"role": credentials["role"]}
